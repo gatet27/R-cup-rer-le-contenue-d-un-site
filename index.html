@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Product Image Grabber</title>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+:root{--bg:#f5f7fb;--card:#fff;--text:#172033;--muted:#667085;--line:#e5e7eb;--accent:#2563eb;--accent2:#1d4ed8;--danger:#b42318}
+*{box-sizing:border-box} body{margin:0;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:linear-gradient(180deg,#eef4ff 0,#f8fafc 35%,#f5f7fb 100%);color:var(--text)}
+.wrap{max-width:1120px;margin:auto;padding:32px 18px 70px}.hero{text-align:center;padding:30px 10px 22px}.hero h1{font-size:clamp(30px,6vw,56px);margin:0 0 10px;letter-spacing:-.04em}.hero p{margin:auto;max-width:720px;color:var(--muted);font-size:17px;line-height:1.5}
+.panel{background:rgba(255,255,255,.94);border:1px solid var(--line);border-radius:22px;padding:18px;box-shadow:0 14px 40px rgba(15,23,42,.07)}
+.search{display:flex;gap:10px}.search input{flex:1;min-width:0;border:1px solid #cfd5df;border-radius:14px;padding:15px 16px;font-size:16px;outline:none}.search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px #2563eb18}
+button{border:0;border-radius:13px;padding:13px 16px;font-weight:750;font-size:15px;cursor:pointer}.primary{background:var(--accent);color:#fff}.primary:hover{background:var(--accent2)}.secondary{background:#eef2f7;color:#263244}.secondary:hover{background:#e3e8ef}button:disabled{opacity:.5;cursor:not-allowed}
+.status{margin-top:14px;padding:12px 14px;border-radius:12px;background:#f8fafc;color:var(--muted);line-height:1.45}.status.error{background:#fff1f0;color:var(--danger)}.status.ok{background:#ecfdf3;color:#027a48}
+.toolbar{display:none;align-items:center;justify-content:space-between;gap:12px;margin:22px 0 14px}.toolbar.show{display:flex}.actions{display:flex;gap:8px;flex-wrap:wrap}.count{font-weight:800}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}.product{position:relative;background:var(--card);border:2px solid transparent;border-radius:18px;overflow:hidden;box-shadow:0 7px 22px rgba(15,23,42,.06);transition:.15s}.product.selected{border-color:var(--accent)}.product img{width:100%;aspect-ratio:1/1;object-fit:contain;background:#fff;display:block}.info{padding:11px 12px 13px}.name{font-size:14px;font-weight:750;line-height:1.35;min-height:38px}.check{position:absolute;top:10px;right:10px;width:29px;height:29px;border-radius:50%;display:grid;place-items:center;background:#fff;border:2px solid #cbd5e1;font-weight:900}.selected .check{background:var(--accent);border-color:var(--accent);color:#fff}
+.download{display:none;margin:24px auto 0;padding:16px 24px;font-size:16px}.download.show{display:block}.note{font-size:13px;color:var(--muted);margin-top:12px}
+@media(max-width:650px){.wrap{padding:18px 12px 50px}.search{flex-direction:column}.search button{width:100%}.toolbar{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.panel{padding:13px;border-radius:18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="hero">
+    <h1>Product Image Grabber</h1>
+    <p>Colle l’adresse d’une page e-commerce pour récupérer les premières images des produits, les sélectionner puis créer un ZIP.</p>
+  </section>
+
+  <section class="panel">
+    <div class="search">
+      <input id="url" type="url" inputmode="url" placeholder="https://www.boutique.com/collection..." autocomplete="off">
+      <button class="primary" id="scan">Analyser le site</button>
+    </div>
+    <div class="status" id="status">Prêt. Les sites qui autorisent l’accès depuis le navigateur peuvent être analysés directement.</div>
+    <div class="note">Limite du mode HTML : certains sites bloquent les requêtes externes (CORS) ou chargent leurs produits uniquement après exécution de scripts. Dans ce cas, le navigateur ne peut pas les lire directement.</div>
+  </section>
+
+  <div class="toolbar" id="toolbar">
+    <div class="count" id="count"></div>
+    <div class="actions">
+      <button class="secondary" id="all">Tout sélectionner</button>
+      <button class="secondary" id="none">Tout enlever</button>
+    </div>
+  </div>
+
+  <main class="grid" id="grid"></main>
+  <button class="primary download" id="download">📦 Créer le ZIP</button>
+</div>
+
+<script>
+const $=s=>document.querySelector(s);
+let products=[];
+
+function status(msg,type=""){
+  const e=$("#status"); e.textContent=msg; e.className="status"+(type?" "+type:"");
+}
+function cleanName(s){
+  return (s||"produit").replace(/[\\/:*?"<>|]+/g," ").replace(/\s+/g," ").trim().slice(0,120)||"produit";
+}
+function abs(u,base){try{return new URL(u,base).href}catch{return ""}}
+function imageFrom(el,base){
+  const attrs=["src","data-src","data-original","data-lazy-src","data-image","data-srcset","srcset"];
+  for(const a of attrs){
+    let v=el.getAttribute?.(a);
+    if(!v) continue;
+    if(a.includes("set")) v=v.split(",")[0].trim().split(/\s+/)[0];
+    v=abs(v,base);
+    if(v && !v.startsWith("data:")) return v;
+  }
+  return "";
+}
+function parseJsonLd(doc,base){
+  const out=[];
+  for(const s of doc.querySelectorAll('script[type="application/ld+json"]')){
+    try{
+      const data=JSON.parse(s.textContent);
+      const walk=x=>{
+        if(!x)return;
+        if(Array.isArray(x)){x.forEach(walk);return}
+        if(typeof x!=="object")return;
+        if(x["@graph"])walk(x["@graph"]);
+        if(x.itemListElement)walk(x.itemListElement.map(i=>i.item||i));
+        const t=x["@type"];
+        const isProduct=t==="Product"||(Array.isArray(t)&&t.includes("Product"));
+        if(isProduct){
+          let im=Array.isArray(x.image)?x.image[0]:x.image;
+          if(im&&typeof im==="object") im=im.url||im.contentUrl;
+          if(x.name&&im) out.push({name:String(x.name),image:abs(im,base)});
+        }
+        Object.values(x).forEach(v=>{if(v&&typeof v==="object")walk(v)});
+      }; walk(data);
+    }catch{}
+  }
+  return out;
+}
+function parseCards(doc,base){
+  const out=[], seen=new Set();
+  const selectors=[
+    '[class*="product"]','[class*="Product"]','[data-product]','li[class*="item"]',
+    'article','[class*="card"]'
+  ];
+  for(const el of doc.querySelectorAll(selectors.join(","))){
+    const img=el.querySelector("img"); if(!img)continue;
+    const image=imageFrom(img,base); if(!image)continue;
+    const nameEl=el.querySelector('[class*="title"],[class*="name"],h1,h2,h3,h4,a[title]');
+    let name=nameEl?.getAttribute?.("title")||nameEl?.textContent||img.alt;
+    name=(name||"").replace(/\s+/g," ").trim();
+    if(name.length<2||name.length>180)continue;
+    const key=name+"|"+image;
+    if(!seen.has(key)){seen.add(key);out.push({name,image})}
+  }
+  return out;
+}
+function dedupe(arr){
+  const seen=new Set();
+  return arr.filter(p=>{
+    if(!p.name||!p.image)return false;
+    const k=(p.name+"|"+p.image).toLowerCase();
+    if(seen.has(k))return false; seen.add(k); return true;
+  }).slice(0,500);
+}
+function render(){
+  const g=$("#grid");g.innerHTML="";
+  products.forEach((p,i)=>{
+    const d=document.createElement("div");d.className="product selected";p.selected=true;
+    d.innerHTML=`<div class="check">✓</div><img loading="lazy"><div class="info"><div class="name"></div></div>`;
+    d.querySelector("img").src=p.image; d.querySelector("img").alt=p.name;
+    d.querySelector(".name").textContent=p.name;
+    d.onclick=()=>{p.selected=!p.selected;d.classList.toggle("selected",p.selected);d.querySelector(".check").textContent=p.selected?"✓":"";update()};
+    g.appendChild(d);
+  });
+  $("#toolbar").classList.toggle("show",products.length>0);
+  $("#download").classList.toggle("show",products.length>0);
+  update();
+}
+function update(){
+  const n=products.filter(p=>p.selected).length;
+  $("#count").textContent=`${products.length} produit${products.length>1?"s":""} trouvé${products.length>1?"s":""} • ${n} sélectionné${n>1?"s":""}`;
+  $("#download").textContent=`📦 Créer le ZIP — ${n} image${n>1?"s":""}`;
+  $("#download").disabled=!n;
+}
+async function scan(){
+  let url=$("#url").value.trim();
+  try{url=new URL(url).href}catch{status("Entre une adresse complète commençant par https://","error");return}
+  $("#scan").disabled=true; products=[];render();status("Analyse de la page en cours…");
+  try{
+    const r=await fetch(url,{mode:"cors",credentials:"omit"});
+    if(!r.ok)throw new Error("HTTP "+r.status);
+    const html=await r.text();
+    const doc=new DOMParser().parseFromString(html,"text/html");
+    products=dedupe([...parseJsonLd(doc,url),...parseCards(doc,url)]);
+    if(!products.length) throw new Error("Aucun produit détecté dans le HTML reçu.");
+    render();status(`${products.length} produit${products.length>1?"s":""} détecté${products.length>1?"s":""}. Choisis les images puis crée le ZIP.`,"ok");
+  }catch(e){
+    status("Impossible d’analyser directement ce site depuis cette page HTML. Il bloque probablement l’accès externe (CORS), utilise une protection anti-bot ou charge ses produits en JavaScript. Essaie une autre boutique ou une page de collection publique. Détail : "+e.message,"error");
+  }finally{$("#scan").disabled=false}
+}
+$("#scan").onclick=scan;
+$("#url").addEventListener("keydown",e=>{if(e.key==="Enter")scan()});
+$("#all").onclick=()=>{products.forEach(p=>p.selected=true);render()};
+$("#none").onclick=()=>{products.forEach(p=>p.selected=false);document.querySelectorAll(".product").forEach((d,i)=>{d.classList.remove("selected");d.querySelector(".check").textContent=""});update()};
+$("#download").onclick=async()=>{
+  const chosen=products.filter(p=>p.selected); if(!chosen.length)return;
+  $("#download").disabled=true;status(`Téléchargement de ${chosen.length} image${chosen.length>1?"s":""}…`);
+  const zip=new JSZip(); const used={}; let ok=0,fail=0;
+  for(let i=0;i<chosen.length;i++){
+    const p=chosen[i];
+    try{
+      const r=await fetch(p.image,{mode:"cors",credentials:"omit"}); if(!r.ok)throw 0;
+      const blob=await r.blob();
+      let ext=(blob.type.split("/")[1]||"jpg").replace("jpeg","jpg").replace("svg+xml","svg");
+      let n=cleanName(p.name); used[n]=(used[n]||0)+1; if(used[n]>1)n+=`_${used[n]}`;
+      zip.file(`${n}.${ext}`,blob);ok++;
+      status(`Images récupérées : ${ok}/${chosen.length}${fail?` • ${fail} bloquée${fail>1?"s":""}`:""}`);
+    }catch{fail++}
+  }
+  if(!ok){status("Les serveurs d’images ont bloqué tous les téléchargements depuis le navigateur (CORS).","error");$("#download").disabled=false;return}
+  const blob=await zip.generateAsync({type:"blob"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="images-produits.zip";a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),5000);
+  status(`ZIP créé : ${ok} image${ok>1?"s":""}${fail?` • ${fail} image${fail>1?"s":""} bloquée${fail>1?"s":""}`:""}.`,"ok");
+  $("#download").disabled=false;
+};
+</script>
+</body>
+</html>
